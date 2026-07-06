@@ -203,6 +203,17 @@ Stretch sheet 2: slip length
 
 ![Follow: Couette velocity profile with the extrapolated slip fit](figures/cuw_slip_follow.png)
 
+**Reading the figure.** Height z runs up the axis and velocity v_x(z) across it, so
+the plot is side-on like the channel. Four things are drawn: the **blue dots** are
+your measured profile (labelled with this run's length, 20 ps); the **grey dashed**
+line is the no-slip reference, the steeper profile the water would follow if it
+stuck to the walls; the **red** line is the straight-line fit to the central water,
+extrapolated to the wall faces, with the red arrow marking the slip length b where
+it reaches the wall speed; the **green** line is the shipped 100-ps reference
+profile your short run is compared against. A red fit shallower than the grey line
+is positive slip; steeper (the wetting default here) is the pinned first layer, a
+small negative b.
+
 **What you should see.** The slip length b follows from the fitted central slope
 s and the wall geometry. With no slip the profile would reach ±`vwall` exactly at
 the innermost wall planes, spanning 2`vwall` over the face-to-face width h; the

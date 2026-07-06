@@ -88,7 +88,7 @@ def load_reference(tier):
     return {"par": rpar, "z": z, "vx": vx, "s": s, "c": c, "r2": r2, "b": b, "se_b": se_b}
 
 
-def plot(z, vx, s, c, zfb, zft, vwall, b, ref=None, out="cuw_slip.png"):
+def plot(z, vx, s, c, zfb, zft, vwall, b, ref=None, this_ps=None, out="cuw_slip.png"):
     """Save the velocity profile vx(z) (z vertical, side-on like the channel)
     with the central Couette fit extrapolated to the wall faces, so the slip
     length b reads off as the offset between the fit and the wall speed.
@@ -111,7 +111,8 @@ def plot(z, vx, s, c, zfb, zft, vwall, b, ref=None, out="cuw_slip.png"):
         t_ref = ref["par"]["nprod"] * ref["par"]["dt"]
         ax.plot(ref["vx"], ref["z"], color=GREEN, lw=1.3,
                 label=f"shipped reference ({t_ref:.0f} ps)")
-    ax.scatter(vx, z, s=14, color=BLUE, alpha=0.75, label=r"measured $v_x(z)$")
+    meas_lbl = (r"measured $v_x(z)$ (%.0f ps)" % this_ps) if this_ps else r"measured $v_x(z)$"
+    ax.scatter(vx, z, s=14, color=BLUE, alpha=0.75, label=meas_lbl)
     ax.plot(s * zl + c, zl, color=RED, lw=1.4, label="central fit, extrapolated")
     ax.axhline(zfb, color="#888888", ls=":", lw=0.9)
     ax.axhline(zft, color="#888888", ls=":", lw=0.9)
@@ -271,7 +272,7 @@ def main():
     if have and overlay is None:
         print(f"      (no shipped reference at eps_sl = {par['eps_sl']:g} eV, "
               f"vwall = {par['vwall']:g} A/ps - the figure shows this run alone)")
-    plot(z, vx, s, c, zfb, zft, vwall, b, ref=overlay)
+    plot(z, vx, s, c, zfb, zft, vwall, b, ref=overlay, this_ps=t_ps)
 
 
 if __name__ == "__main__":

@@ -71,7 +71,7 @@ def fit_extrap(z, T, z0, name):
     sig2 = np.sum(resid ** 2) / (n - 2)
     se = float(np.sqrt(sig2 * (1.0 / n + (z0 - z.mean()) ** 2 / sxx)))
     ss = np.sum((T - T.mean()) ** 2)
-    r2 = 1 - np.sum(resid ** 2) / ss if ss > 0 else float("nan")
+    r2 = 1 - np.sum(resid ** 2) / ss if ss > 1e-6 else float("nan")  # flat/all-equal -> unresolved
     return s * z0 + c, se, s, r2
 
 
@@ -82,6 +82,8 @@ def rate_fit(t, F, nb=10):
     would understate the error)."""
     s = np.polyfit(t, F, 1)[0]
     nper = len(t) // nb
+    if nper < 2:                                # too few rows to split into nb blocks:
+        return float(s), float("nan")          # a real SE is unavailable (do not fabricate 0)
     blocks = [(F[(i + 1) * nper - 1] - F[i * nper]) / (t[(i + 1) * nper - 1] - t[i * nper])
               for i in range(nb)]
     return float(s), float(np.std(blocks, ddof=1) / np.sqrt(nb))
@@ -116,7 +118,8 @@ def score_run(rdir, name):
     t = step * par["dt"]
     Pb, seb = rate_fit(t, fb)
     Pt, sett = rate_fit(t, ft)
-    imb = abs(Pb + Pt) / (0.5 * (abs(Pb) + abs(Pt)))
+    denom = 0.5 * (abs(Pb) + abs(Pt))          # floor: both bath powers ~0 (unresolved window)
+    imb = abs(Pb + Pt) / denom if denom > 1e-12 else float("nan")
 
     # corrected thermometers: water on 6 DOF per molecule, Cu on the full 3
     # DOF per atom; the pinned anchor planes (outside zsplit) are dropped
@@ -273,54 +276,65 @@ def main():
                      "job (squeue --me) to finish; otherwise run `lmp_serial -in "
                      "conductance.in` first.")
     par = read_params("cuw_params.txt")
-    if abs(par["Tbot"] - par["Ttop"]) < 1e-9:
-        sys.exit("Tbot == Ttop in cuw_params.txt: this run had no thermal gradient, so "
-                 "there is no heat current and no conductance to measure. Rerun "
-                 "conductance.in with its default gradient (Tbot 330, Ttop 270).")
-    run = score_run(".", "this run's")
+    this_ps = par["nprod"] * par["dt"]         # this run's length, available even if it fails
+
+    # Reference FIRST: the jumps and G the sheet quotes come from here, and it is
+    # printed below no matter what this short run does - nothing may abort before it.
+    ref = load_reference()
 
     print("\nStretch sheet 4: interfacial conductance")
-    print(f"    wall baths           Tbot = {par['Tbot']:.0f} K / Ttop = {par['Ttop']:.0f} K   "
-          f"(the {run['hot']} wall is hot)")
-    print(f"    energy in / out      in {run['rate_in']:+.3f} +/- {run['se_in']:.3f} eV/ps at "
-          f"the {run['hot']} wall,")
-    print(f"                         out {run['rate_out']:+.3f} +/- {run['se_out']:.3f} eV/ps at "
-          f"the {run['cold']} wall")
-    print(f"    imbalance            {run['imb'] * 100:.1f} %   (energy in equals energy out "
-          "in a steady run)")
-    if run["imb"] > 0.30:
-        print("      -> the two tallies have not converged - this run is shorter than the")
-        print("         steady-state time. The jumps below are a snapshot of the transient,")
-        print("         not the steady answer.")
-    print(f"    conduction fit       dT/dz = {run['slope']:+.3f} K/A across the fluid interior "
-          f"(R^2 = {run['r2']:.3f};")
-    print(f"                         the adhered first {ADHERED:.0f} A of water at each face "
-          "excluded)")
-    print(f"    temperature jumps    dT_bot = {run['jb']:+.1f} +/- {run['sejb']:.1f} K, "
-          f"dT_top = {run['jt']:+.1f} +/- {run['sejt']:.1f} K")
-    # This run does NOT measure G. A student-length run is transient (SPEC 6.4:
-    # "a student-length run CANNOT measure G"), so G = J / dT is quoted only from
-    # the shipped reference below, not from this run - even when both jumps
-    # happen to clear 3x their fit error, that ratio is a transient snapshot, not
-    # the steady conductance. The message says which case this run fell in.
-    if sum(g is not None for g in (run["Gb"], run["Gt"])) < 2:
-        print("      (a jump that does not clear 3x its fit error is not resolved: G = J / dT")
-        print("       there would divide by noise, so it is not quoted for this window)")
-    else:
-        print("      (both jumps clear 3x their fit error here, but a student-length run is")
-        print("       still transient, so this run's G = J / dT is a snapshot of the transient,")
-        print("       not the measured conductance - G is quoted from the shipped reference below)")
-    print(f"    water temperature    {run['t_mid']:.1f} K at mid-channel over the "
-          f"{run['t_ps']:.0f} ps production window")
 
-    # shipped reference tier (the two-tier pattern: this short run vs the
-    # converged answer) - the jumps and G the sheet quotes come from here
-    ref = load_reference()
+    # ---- this run's own short, transient measurement; any failure (no gradient,
+    #      a degenerate fit window) degrades to the reference-only summary ----
+    run = None
+    try:
+        if abs(par["Tbot"] - par["Ttop"]) < 1e-9:
+            raise SystemExit("this run set Tbot == Ttop, so there is no thermal gradient and no "
+                             "conductance to\n      measure; the shipped reference is shown below. "
+                             "Rerun conductance.in with its\n      default gradient (Tbot 330, "
+                             "Ttop 270).")
+        run = score_run(".", "this run's")
+        print(f"    wall baths           Tbot = {par['Tbot']:.0f} K / Ttop = {par['Ttop']:.0f} K   "
+              f"(the {run['hot']} wall is hot)")
+        print(f"    energy in / out      in {run['rate_in']:+.3f} +/- {run['se_in']:.3f} eV/ps at "
+              f"the {run['hot']} wall,")
+        print(f"                         out {run['rate_out']:+.3f} +/- {run['se_out']:.3f} eV/ps at "
+              f"the {run['cold']} wall")
+        print(f"    imbalance            {run['imb'] * 100:.1f} %   (energy in equals energy out "
+              "in a steady run)")
+        if run["imb"] > 0.30:
+            print("      -> the two tallies have not converged - this run is shorter than the")
+            print("         steady-state time. The jumps below are a snapshot of the transient,")
+            print("         not the steady answer.")
+        print(f"    conduction fit       dT/dz = {run['slope']:+.3f} K/A across the fluid interior "
+              f"(R^2 = {run['r2']:.3f};")
+        print(f"                         the adhered first {ADHERED:.0f} A of water at each face "
+              "excluded)")
+        print(f"    temperature jumps    dT_bot = {run['jb']:+.1f} +/- {run['sejb']:.1f} K, "
+              f"dT_top = {run['jt']:+.1f} +/- {run['sejt']:.1f} K")
+        # This run does NOT measure G. A student-length run is transient (SPEC 6.4:
+        # "a student-length run CANNOT measure G"), so G = J / dT is quoted only from
+        # the shipped reference below, not from this run - even when both jumps
+        # happen to clear 3x their fit error, that ratio is a transient snapshot, not
+        # the steady conductance. The message says which case this run fell in.
+        if sum(g is not None for g in (run["Gb"], run["Gt"])) < 2:
+            print("      (a jump that does not clear 3x its fit error is not resolved: G = J / dT")
+            print("       there would divide by noise, so it is not quoted for this window)")
+        else:
+            print("      (both jumps clear 3x their fit error here, but a student-length run is")
+            print("       still transient, so this run's G = J / dT is a snapshot of the transient,")
+            print("       not the measured conductance - G is quoted from the shipped reference below)")
+        print(f"    water temperature    {run['t_mid']:.1f} K at mid-channel over the "
+              f"{run['t_ps']:.0f} ps production window")
+    except SystemExit as e:
+        print(f"    {e}")
+
+    # shipped reference tier - ALWAYS shown, whatever this run did above
     if ref is not None:
         rpar = ref["par"]
         print(f"    shipped reference ({ref['t_ps']:.0f} ps of averaging after "
               f"{rpar['nequil'] * rpar['dt']:.0f} ps of settling; this run: "
-              f"{run['t_ps']:.0f} ps):")
+              f"{this_ps:.0f} ps):")
         print(f"      energy in / out = {ref['rate_in']:+.3f} / {ref['rate_out']:+.3f} eV/ps  "
               f"(imbalance {ref['imb'] * 100:.1f} %)")
         print(f"      dT_bot = {ref['jb']:+.1f} +/- {ref['sejb']:.1f} K, "
@@ -334,7 +348,11 @@ def main():
             print(f"      (no shipped reference at Tbot = {par['Tbot']:g} K, "
                   f"Ttop = {par['Ttop']:g} K - the figure shows this run alone)")
             ref = None
-    plot(run, ref=ref)
+    if run is not None:
+        plot(run, ref=ref)
+    else:
+        print("    (no figure for this run - it produced no usable temperature profile; the "
+              "shipped reference values above are the ones to read)")
 
 
 if __name__ == "__main__":

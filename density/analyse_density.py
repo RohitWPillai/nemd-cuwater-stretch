@@ -130,7 +130,11 @@ def main():
           f"(peaks within 10 A of each face: {len(pk_bot)} / {len(pk_top)})")
     print(f"    fluid temperature    {watT.mean():.1f} K over the {t_ps:.0f} ps production "
           f"window  (wall baths at {par['Tbot']:.0f} K)")
-    if min(c_bot, c_top) > 1.2:
+    if rho_bulk != rho_bulk or rho_bulk < 0.1:      # nan (empty band) or ~0 density
+        print("    -> the density profile is essentially empty: no water in the channel band.")
+        print("       This run did not produce a usable density profile (NOT a 'uniform' result)")
+        print("       - check it completed and wrote cuw_density.profile.")
+    elif min(c_bot, c_top) > 1.2:
         print("    -> the water is NOT uniform: it stacks into layers against the copper wall.")
     else:
         print("    -> no layering left: the water meets the wall essentially uniform.")

@@ -79,6 +79,8 @@ def block_se(x, nb=10):
     """Standard error of the mean of a correlated series: split into nb equal
     blocks and take the SE of the block means (samples 0.1 ps apart are not
     independent, so the naive SE would understate the error)."""
+    if len(x) < 2:
+        return float("nan")                    # no SE from a single sample
     nper = len(x) // nb
     if nper < 1:
         return float(np.std(x, ddof=1) / np.sqrt(len(x)))
@@ -92,8 +94,11 @@ def eta_of(par, z, vx, pxz_series, name="cuw_vx.profile"):
     s, c, r2, se_s = central_fit(z, vx, name=name)
     pxz = float(pxz_series.mean())
     se_p = block_se(pxz_series)
-    eta = abs(pxz) / abs(s) * BAR_PER_PS_TO_MPAS
-    se_eta = eta * float(np.hypot(se_p / abs(pxz), se_s / abs(s)))
+    # floor both divisors: a near-zero shear rate (a flat/reversed short run) or a
+    # near-zero mean stress (the zero-drive cross-check) is a legitimate outcome and
+    # must not raise ZeroDivisionError before the reference is shown.
+    eta = abs(pxz) / max(abs(s), 1e-6) * BAR_PER_PS_TO_MPAS
+    se_eta = eta * float(np.hypot(se_p / max(abs(pxz), 1e-12), se_s / max(abs(s), 1e-6)))
     return {"s": s, "c": c, "r2": r2, "se_s": se_s,
             "pxz": pxz, "se_p": se_p, "eta": eta, "se_eta": se_eta}
 
@@ -144,8 +149,9 @@ def plot(z, vx, fit, zfb, zft, Tbot, zT, T, t_ps, pxz_series, ref=None,
         axL.plot(ref["vx"], ref["z"], color=GREEN, lw=1.3,
                  label=f"shipped reference ({t_ref:.0f} ps)")
     axL.scatter(vx, z, s=14, color=BLUE, alpha=0.75, label=r"measured $v_x(z)$")
-    zl = np.linspace(zfb, zft, 50)
-    axL.plot(fit["s"] * zl + fit["c"], zl, color=RED, lw=1.4, label="central fit")
+    if fit is not None:                        # the central fit only if this run fitted
+        zl = np.linspace(zfb, zft, 50)
+        axL.plot(fit["s"] * zl + fit["c"], zl, color=RED, lw=1.4, label="central fit")
     axL.set_xlabel(r"$v_x(z)$ ($\mathrm{\AA}$/ps)")
     axL.set_ylabel(r"$z$ ($\mathrm{\AA}$)")
     axL.set_title(r"velocity profile $v_x(z)$")
@@ -172,8 +178,8 @@ def plot(z, vx, fit, zfb, zft, Tbot, zT, T, t_ps, pxz_series, ref=None,
                     label=r"reference mean $%+.0f$ bar" % ref["pxz"])
     axR.set_xlabel(r"$t$ (ps)")
     axR.set_ylabel(r"$p_{xz}$ (bar)")
-    axR.set_title(r"shear stress $p_{xz}$  ($\eta \approx %.2f$ mPa$\cdot$s)"
-                  % fit["eta"])
+    eta_txt = (r"$\eta \approx %.2f$ mPa$\cdot$s" % fit["eta"]) if fit is not None else "reference shown"
+    axR.set_title(r"shear stress $p_{xz}$  (%s)" % eta_txt)
     axR.legend(fontsize=7, frameon=True, facecolor="white", framealpha=0.9,
                edgecolor="none", loc="upper right")
 
@@ -199,80 +205,79 @@ def main():
     par = read_params("cuw_params.txt")
     vwall, zfb, zft = par["vwall"], par["zface_bot"], par["zface_top"]
     h = zft - zfb
-    if vwall == 0.0:
-        sys.exit("vwall = 0 in cuw_params.txt: this run had no wall motion, so there is no "
-                 "shear rate to divide the stress by. Rerun viscosity.in with its default "
-                 "vwall (0.5 A/ps).")
+    t_ps = par["nprod"] * par["dt"]
 
     z, n, vx = read_profile("cuw_vx.profile")
     m = n > 0.5                              # keep only bins that hold atoms
     z, vx = z[m], vx[m]
     pxz_series = read_timeseries("cuw_stress.dat", col=1)
-    fit = eta_of(par, z, vx, pxz_series)
 
-    # peculiar T(z) (corrected thermometer) + its mid-channel mean
+    # peculiar T(z) (corrected thermometer) + its mid-channel mean - independent of
+    # the shear fit, so computed up front (the plot needs it even if the fit fails)
     zk, ck, vals = read_profile_multi("cuw_ke.profile", 5)
     zo, co, tbin = corrected_T_profile(zk, ck, vals)
     t_mid = t_mid_of(zo, co, tbin, 0.5 * (zfb + zft))
-
     ns_slope = 2 * vwall / h                 # slope if the water stuck to the walls
-    v_face_bot = fit["s"] * zfb + fit["c"]   # fluid velocity extrapolated to each wall face
-    v_face_top = fit["s"] * zft + fit["c"]
-    t_ps = par["nprod"] * par["dt"]
+    t_heated = t_mid - par["Tbot"] > 10.0
 
-    print("\nStretch sheet 3: viscosity")
-    print(f"    central shear rate   dvx/dz = {fit['s']:+.5f} (A/ps)/A   "
-          f"(R^2 = {fit['r2']:.3f})")
-
-    # HARD setup check (fatal): with no real Couette gradient the shear rate is
-    # ~0 or reversed, so eta = |p_xz|/|dvx/dz| blows up or goes negative - it is
-    # genuinely meaningless, and unlike the noise case below there is nothing to
-    # fall back on. (ns_slope > 0 here; vwall = 0 is caught earlier.)
-    if fit["s"] < 0.25 * ns_slope:
-        print(f"    water velocity at the wall faces = {v_face_bot:+.3f} / {v_face_top:+.3f} A/ps"
-              f"  (wall speed -/+{vwall:g} A/ps)")
-        sys.exit("    FAIL: no steady Couette shear - the velocity profile is flat or reversed\n"
-                 "    (the measured slope is far below the no-slip line, or opposite in sign),\n"
-                 "    so eta = |p_xz|/|dvx/dz| is meaningless. Check the -var vwall value and\n"
-                 "    that nequil reached steady flow before the production run.")
-
-    # SOFT note (warn, continue): an UNHEATED short run can shear a little above
-    # the no-slip line, or extrapolate the wall-face speed past the wall - both
-    # are fit noise for the pinned first layer, not a setup error. They make the
-    # single-run eta noisier, which the shipped reference below settles. Once
-    # viscous heating sets in the hot centre shears faster on correct physics
-    # (its own note fires further down), so skip this noise note then.
-    tol = 1.15
-    if t_mid - par["Tbot"] <= 10.0 and (abs(fit["s"]) > tol * ns_slope
-                                        or max(abs(v_face_bot), abs(v_face_top)) > tol * vwall):
-        print(f"    water velocity at the wall faces = {v_face_bot:+.3f} / {v_face_top:+.3f} A/ps"
-              f"  (wall speed -/+{vwall:g} A/ps)")
-        print("    NOTE: the short run's shear rate is noisy (the wetting copper pins the first")
-        print("      water layer, so a straight-line fit over-reads the near-wall gradient). The")
-        print("      walls are driving correctly; this just makes the single-run eta below")
-        print("      noisier - rely on the shipped reference for the converged value.")
-
-    # shipped reference tier (the two-tier pattern: this short run vs the
-    # converged answer) - loaded here so the summary can point at it
+    # Reference FIRST: the converged eta is loaded up front and printed below no
+    # matter what this short run does - nothing here may abort before it.
     ref = load_reference()
 
-    print(f"    mean shear stress    p_xz = {fit['pxz']:+.1f} +/- {fit['se_p']:.1f} bar "
-          f"over the {t_ps:.0f} ps production window")
-    print(f"    viscosity            eta = |p_xz| / (dvx/dz) = "
-          f"{fit['eta']:.2f} +/- {fit['se_eta']:.2f} mPa*s")
-    print("    (single-run values move with the seed and the run length - "
-          + ("compare the" if ref is not None else "watch the running"))
-    print("     shipped reference below and the running mean in the figure.)"
-          if ref is not None else "     mean in the figure.)")
-    print(f"    water temperature    {t_mid:.1f} K mid-channel over the {t_ps:.0f} ps "
-          f"production window  (wall baths at {par['Tbot']:.0f} K)")
-    if t_mid - par["Tbot"] > 10.0:
-        print("      -> more than 10 K above the bath: viscous heating has set in - the")
-        print("         channel is no longer isothermal, so a single eta no longer")
-        print("         describes it (read T(z) in the figure).")
+    print("\nStretch sheet 3: viscosity")
 
-    # quote the converged eta, then overlay the reference only when it
-    # matches this run's knobs
+    # ---- this run's own short, noisy measurement; any failure degrades to the
+    #      reference-only summary, never an abort ----
+    fit = None
+    try:
+        if vwall == 0.0:
+            raise SystemExit("this run set vwall = 0, so there is no shear rate to divide the "
+                             "stress by;\n      the shipped reference is shown below. Rerun "
+                             "viscosity.in with its default vwall (0.5 A/ps).")
+        fit = eta_of(par, z, vx, pxz_series)
+        v_face_bot = fit["s"] * zfb + fit["c"]   # fluid velocity extrapolated to each wall face
+        v_face_top = fit["s"] * zft + fit["c"]
+        print(f"    central shear rate   dvx/dz = {fit['s']:+.5f} (A/ps)/A   "
+              f"(R^2 = {fit['r2']:.3f})")
+
+        # Sanity of the short run - all NON-FATAL (the reference below is always shown).
+        tol = 1.15
+        flat = fit["s"] < 0.25 * ns_slope
+        if flat:
+            print(f"    water velocity at the wall faces = {v_face_bot:+.3f} / {v_face_top:+.3f} "
+                  f"A/ps  (wall speed -/+{vwall:g} A/ps)")
+            print("    NOTE: the central slope is far below the no-slip line (flat or reversed);")
+            print("      on a short run this is usually noise. eta = |p_xz|/|dvx/dz| is unreliable")
+            print("      here - read it as indicative only and rely on the shipped reference below.")
+        elif (not t_heated) and (abs(fit["s"]) > tol * ns_slope
+                                 or max(abs(v_face_bot), abs(v_face_top)) > tol * vwall):
+            # noisy-but-driving (skip once viscous heating sets in - its own note fires below)
+            print(f"    water velocity at the wall faces = {v_face_bot:+.3f} / {v_face_top:+.3f} "
+                  f"A/ps  (wall speed -/+{vwall:g} A/ps)")
+            print("    NOTE: the short run's shear rate is noisy (the wetting copper pins the first")
+            print("      water layer, so a straight-line fit over-reads the near-wall gradient). The")
+            print("      walls are driving correctly; this just makes the single-run eta below")
+            print("      noisier - rely on the shipped reference for the converged value.")
+
+        print(f"    mean shear stress    p_xz = {fit['pxz']:+.1f} +/- {fit['se_p']:.1f} bar "
+              f"over the {t_ps:.0f} ps production window")
+        print(f"    viscosity            eta = |p_xz| / (dvx/dz) = "
+              f"{fit['eta']:.2f} +/- {fit['se_eta']:.2f} mPa*s")
+        print("    (single-run values move with the seed and the run length - "
+              + ("compare the" if ref is not None else "watch the running"))
+        print("     shipped reference below and the running mean in the figure.)"
+              if ref is not None else "     mean in the figure.)")
+        print(f"    water temperature    {t_mid:.1f} K mid-channel over the {t_ps:.0f} ps "
+              f"production window  (wall baths at {par['Tbot']:.0f} K)")
+        if t_heated:
+            print("      -> more than 10 K above the bath: viscous heating has set in - the")
+            print("         channel is no longer isothermal, so a single eta no longer")
+            print("         describes it (read T(z) in the figure).")
+    except SystemExit as e:
+        print(f"    {e}")
+
+    # shipped reference tier - ALWAYS shown, whatever this run did above
+    overlay = ref
     if ref is not None:
         t_ref = ref["par"]["nprod"] * ref["par"]["dt"]
         print(f"    shipped reference ({t_ref:.0f} ps of averaging; this run: {t_ps:.0f} ps):")
@@ -283,8 +288,8 @@ def main():
                 np.isclose(par["vwall"], ref["par"]["vwall"])):
             print(f"      (no shipped reference at eps_sl = {par['eps_sl']:g} eV, "
                   f"vwall = {par['vwall']:g} A/ps - the figure shows this run alone)")
-            ref = None
-    plot(z, vx, fit, zfb, zft, par["Tbot"], zo, tbin, t_ps, pxz_series, ref=ref)
+            overlay = None
+    plot(z, vx, fit, zfb, zft, par["Tbot"], zo, tbin, t_ps, pxz_series, ref=overlay)
 
 
 if __name__ == "__main__":

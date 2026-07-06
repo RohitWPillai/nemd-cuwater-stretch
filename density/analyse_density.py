@@ -119,7 +119,10 @@ def main():
     first_top = pk_top[-1][1] if pk_top else float("nan")
     c_bot, c_top = first_bot / rho_bulk, first_top / rho_bulk
 
-    watT = read_timeseries("cuw_density_T.dat", col=1)
+    try:
+        tmean = read_timeseries("cuw_density_T.dat", col=1).mean()
+    except SystemExit:                        # a truncated T trace must not lose the density result
+        tmean = float("nan")
     t_ps = par["nprod"] * par["dt"]
 
     print("\nStretch sheet 1: density")
@@ -128,7 +131,7 @@ def main():
           f"{first_top:.3f} g/cm3 (top)")
     print(f"    contrast vs plateau  {c_bot:.2f}x / {c_top:.2f}x   "
           f"(peaks within 10 A of each face: {len(pk_bot)} / {len(pk_top)})")
-    print(f"    fluid temperature    {watT.mean():.1f} K over the {t_ps:.0f} ps production "
+    print(f"    fluid temperature    {tmean:.1f} K over the {t_ps:.0f} ps production "
           f"window  (wall baths at {par['Tbot']:.0f} K)")
     if rho_bulk != rho_bulk or rho_bulk < 0.1:      # nan (empty band) or ~0 density
         print("    -> the density profile is essentially empty: no water in the channel band.")

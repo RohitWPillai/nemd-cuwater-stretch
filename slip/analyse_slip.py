@@ -162,24 +162,22 @@ def main():
     h = zft - zfb
     t_ps = par["nprod"] * par["dt"]
 
-    z, n, vx = read_profile("cuw_vx.profile")
-    m = n > 0.5                              # keep only bins that hold atoms
-    z, vx = z[m], vx[m]
-
-    # Reference FIRST: the converged answer key is loaded up front and printed
-    # below no matter what this short run does. The two-tier design turns on the
-    # student always seeing it, so nothing here may abort before it.
+    # Reference FIRST: loaded before ANY this-run read, so a truncated/incomplete
+    # this-run file (e.g. a job killed mid-write) still shows the converged answer.
     ref = {t: load_reference(t) for t in ("follow", "push")}
     tags = {"follow": "the wetting default", "push": "the Push value"}
     have = [t for t in ("follow", "push") if ref[t]]
 
     print("\nStretch sheet 2: slip length")
 
-    # ---- this run's own short, noisy measurement. Any failure (no drive, a
-    #      degenerate fit window) degrades to the reference-only summary below,
-    #      never an abort - hence the try/except around the whole block. ----
-    s = c = b = se_b = None
+    # ---- this run's own short, noisy measurement. Any failure - a degenerate fit,
+    #      no drive, OR an incomplete output file (a killed job) - degrades to the
+    #      reference-only summary below, never an abort. ----
+    z = vx = s = c = b = se_b = None
     try:
+        z, n, vx = read_profile("cuw_vx.profile")
+        m = n > 0.5                          # keep only bins that hold atoms
+        z, vx = z[m], vx[m]
         if vwall == 0.0:
             raise SystemExit("this run set vwall = 0, so there is no Couette slope to fit;\n"
                              "      the shipped reference is shown below. Rerun slip.in with its "
@@ -255,7 +253,7 @@ def main():
             print(f"    -> eps_sl = {par['eps_sl']:g} eV, not the wetting 0.0256 eV: compare b with "
                   "your default run -")
             print("       a weaker O-Cu attraction lets the water slide further.")
-    except SystemExit as e:
+    except (SystemExit, ZeroDivisionError, FloatingPointError, ValueError) as e:
         print(f"    {e}")
 
     # shipped reference tier (the two-tier pattern: this short run vs the
@@ -282,7 +280,10 @@ def main():
     if have and overlay is None:
         print(f"      (no shipped reference at eps_sl = {par['eps_sl']:g} eV, "
               f"vwall = {par['vwall']:g} A/ps - the figure shows this run alone)")
-    plot(z, vx, s, c, zfb, zft, vwall, b, ref=overlay, this_ps=t_ps)
+    if z is not None:
+        plot(z, vx, s, c, zfb, zft, vwall, b, ref=overlay, this_ps=t_ps)
+    else:
+        print("    (no figure - this run's output was incomplete; the reference above is the value)")
 
 
 if __name__ == "__main__":

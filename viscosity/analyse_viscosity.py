@@ -210,29 +210,29 @@ def main():
     h = zft - zfb
     t_ps = par["nprod"] * par["dt"]
 
-    z, n, vx = read_profile("cuw_vx.profile")
-    m = n > 0.5                              # keep only bins that hold atoms
-    z, vx = z[m], vx[m]
-    pxz_series = read_timeseries("cuw_stress.dat", col=1)
-
-    # peculiar T(z) (corrected thermometer) + its mid-channel mean - independent of
-    # the shear fit, so computed up front (the plot needs it even if the fit fails)
-    zk, ck, vals = read_profile_multi("cuw_ke.profile", 5)
-    zo, co, tbin = corrected_T_profile(zk, ck, vals)
-    t_mid = t_mid_of(zo, co, tbin, 0.5 * (zfb + zft))
     ns_slope = 2 * vwall / h                 # slope if the water stuck to the walls
-    t_heated = t_mid - par["Tbot"] > 10.0
 
-    # Reference FIRST: the converged eta is loaded up front and printed below no
-    # matter what this short run does - nothing here may abort before it.
+    # Reference FIRST: loaded before ANY this-run read, so a truncated/incomplete
+    # this-run file (e.g. a killed job) still shows the converged answer.
     ref = load_reference()
 
     print("\nStretch sheet 3: viscosity")
 
-    # ---- this run's own short, noisy measurement; any failure degrades to the
-    #      reference-only summary, never an abort ----
-    fit = None
+    # ---- this run's own short, noisy measurement; any failure - a degenerate fit,
+    #      no drive, OR an incomplete output file (a killed job) - degrades to the
+    #      reference-only summary, never an abort. ----
+    z = vx = pxz_series = zo = tbin = fit = None
+    t_heated = False
     try:
+        z, n, vx = read_profile("cuw_vx.profile")
+        m = n > 0.5                          # keep only bins that hold atoms
+        z, vx = z[m], vx[m]
+        pxz_series = read_timeseries("cuw_stress.dat", col=1)
+        # peculiar T(z) (corrected thermometer) + its mid-channel mean
+        zk, ck, vals = read_profile_multi("cuw_ke.profile", 5)
+        zo, co, tbin = corrected_T_profile(zk, ck, vals)
+        t_mid = t_mid_of(zo, co, tbin, 0.5 * (zfb + zft))
+        t_heated = t_mid - par["Tbot"] > 10.0
         if vwall == 0.0:
             raise SystemExit("this run set vwall = 0, so there is no shear rate to divide the "
                              "stress by;\n      the shipped reference is shown below. Rerun "
@@ -282,7 +282,7 @@ def main():
             print("      -> more than 10 K above the bath: viscous heating has set in - the")
             print("         channel is no longer isothermal, so a single eta no longer")
             print("         describes it (read T(z) in the figure).")
-    except SystemExit as e:
+    except (SystemExit, ZeroDivisionError, FloatingPointError, ValueError) as e:
         print(f"    {e}")
 
     # shipped reference tier - ALWAYS shown, whatever this run did above
@@ -298,7 +298,10 @@ def main():
             print(f"      (no shipped reference at eps_sl = {par['eps_sl']:g} eV, "
                   f"vwall = {par['vwall']:g} A/ps - the figure shows this run alone)")
             overlay = None
-    plot(z, vx, fit, zfb, zft, par["Tbot"], zo, tbin, t_ps, pxz_series, ref=overlay)
+    if z is not None and zo is not None:
+        plot(z, vx, fit, zfb, zft, par["Tbot"], zo, tbin, t_ps, pxz_series, ref=overlay)
+    else:
+        print("    (no figure - this run's output was incomplete; the reference above is the value)")
 
 
 if __name__ == "__main__":

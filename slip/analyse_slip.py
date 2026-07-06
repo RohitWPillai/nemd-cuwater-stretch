@@ -55,6 +55,9 @@ def central_fit(z, vx, name="cuw_vx.profile"):
     """Unweighted OLS line through the central half of the occupied span
     (away from the structured near-wall layers) -> slope, intercept, R^2,
     SE(slope). The same fit scores this run and the shipped reference."""
+    if len(z) < 3:                            # empty/near-empty profile: guard min()/max() below
+        raise SystemExit(f"slip fit: fewer than 3 occupied bins in {name} - check the run "
+                         "completed and wrote a filled channel.")
     zc, W = 0.5 * (z.min() + z.max()), z.max() - z.min()
     cen = (z > zc - 0.25 * W) & (z < zc + 0.25 * W)
     if np.count_nonzero(cen) < 3:

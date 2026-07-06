@@ -109,7 +109,7 @@ def main():
     # central plateau: the 15 A band around the channel midplane
     zmid = 0.5 * (zfb + zft)
     plat = (z >= zmid - 7.5) & (z <= zmid + 7.5)
-    rho_bulk = sm[plat].mean()
+    rho_bulk = sm[plat].mean() if plat.any() else float("nan")   # no plateau bins -> empty (no warning)
 
     # layering: peaks within 10 A of each wall face; the first peak is the
     # one nearest the face

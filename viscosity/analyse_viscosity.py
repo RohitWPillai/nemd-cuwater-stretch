@@ -61,6 +61,9 @@ def central_fit(z, vx, name="cuw_vx.profile"):
     """Unweighted OLS line through the central half of the occupied span
     (away from the structured near-wall layers) -> slope, intercept, R^2,
     SE(slope). The same fit scores this run and the shipped reference."""
+    if len(z) < 3:                            # empty/near-empty profile: guard min()/max() below
+        raise SystemExit(f"viscosity fit: fewer than 3 occupied bins in {name} - check the run "
+                         "completed and wrote a filled channel.")
     zc, W = 0.5 * (z.min() + z.max()), z.max() - z.min()
     cen = (z > zc - 0.25 * W) & (z < zc + 0.25 * W)
     if np.count_nonzero(cen) < 3:
@@ -261,12 +264,18 @@ def main():
 
         print(f"    mean shear stress    p_xz = {fit['pxz']:+.1f} +/- {fit['se_p']:.1f} bar "
               f"over the {t_ps:.0f} ps production window")
-        print(f"    viscosity            eta = |p_xz| / (dvx/dz) = "
-              f"{fit['eta']:.2f} +/- {fit['se_eta']:.2f} mPa*s")
-        print("    (single-run values move with the seed and the run length - "
-              + ("compare the" if ref is not None else "watch the running"))
-        print("     shipped reference below and the running mean in the figure.)"
-              if ref is not None else "     mean in the figure.)")
+        if flat:
+            # eta = |p_xz|/|s| is meaningless when the shear rate is ~0/reversed; the
+            # floored divisor would print a huge artefact, so suppress the number.
+            print("    viscosity            not meaningfully determined on this run (the shear")
+            print("      rate is flat or reversed - see the NOTE); use the shipped reference below.")
+        else:
+            print(f"    viscosity            eta = |p_xz| / (dvx/dz) = "
+                  f"{fit['eta']:.2f} +/- {fit['se_eta']:.2f} mPa*s")
+            print("    (single-run values move with the seed and the run length - "
+                  + ("compare the" if ref is not None else "watch the running"))
+            print("     shipped reference below and the running mean in the figure.)"
+                  if ref is not None else "     mean in the figure.)")
         print(f"    water temperature    {t_mid:.1f} K mid-channel over the {t_ps:.0f} ps "
               f"production window  (wall baths at {par['Tbot']:.0f} K)")
         if t_heated:

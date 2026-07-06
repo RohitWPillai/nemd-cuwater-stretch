@@ -94,7 +94,7 @@ def G_of(P, seP, j, sej, area):
     quadrature. Returns (None, None) unless the jump is resolved (positive and
     at least 3x its fit error) - dividing J by an unresolved dT gives noise,
     not a conductance."""
-    if j <= 0 or j < 3.0 * sej:
+    if j <= 0 or j < 3.0 * sej or abs(P) < 1e-12:   # unresolved jump OR no bath power -> no G
         return None, None
     G = abs(P) / area * EVPS_A2_TO_MW_M2 / j
     return G, G * float(np.hypot(seP / abs(P), sej / j))
@@ -326,8 +326,12 @@ def main():
             print("       not the measured conductance - G is quoted from the shipped reference below)")
         print(f"    water temperature    {run['t_mid']:.1f} K at mid-channel over the "
               f"{run['t_ps']:.0f} ps production window")
-    except SystemExit as e:
-        print(f"    {e}")
+    except (SystemExit, ZeroDivisionError, FloatingPointError, ValueError) as e:
+        # any numeric degeneracy in this run's scoring degrades to the reference,
+        # never a fatal abort (programmer errors like KeyError still surface)
+        print(f"    this run did not produce a usable conductance measurement ({e});")
+        print("      the shipped reference below is the value to read.")
+        run = None
 
     # shipped reference tier - ALWAYS shown, whatever this run did above
     if ref is not None:

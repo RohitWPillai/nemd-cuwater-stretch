@@ -1,0 +1,117 @@
+# =====================================================================
+#  NEMD Summer School 2026 - Day 1 stretch (Cu/water channel)
+#  MEASUREMENT: interfacial thermal conductance (Kapitza)
+#
+#  How well does heat cross the Cu/water interface? Hold the bottom wall
+#  hot and the top wall cold, let heat conduct across the channel, and
+#  measure the temperature JUMP dT right at each wall together with the
+#  energy each bath feeds in or takes out. The interfacial conductance
+#  is G = J / dT - the Day-1 conductance measurement again, now in
+#  MW/m2K against real water on copper.
+#
+#  The gradient is BUILT IN below (Tbot 330 K, Ttop 270 K), so the base
+#  run needs NO command-line flags. The walls stay STILL.
+#
+#  Run from this folder via the Cirrus wrapper:
+#     ../submit.sh conductance.in  (locally: lmp_serial -in conductance.in)
+#  then: python3 analyse_conductance.py
+#
+#  Real water reaches its steady thermal profile slowly: a run this
+#  length shows the TRANSIENT, and the analyser says so when the two
+#  bath tallies have not converged. The shipped reference/ holds the
+#  long run the quoted jumps and G come from.
+#
+#  This file sets its case parameters, then includes the shared setup with
+#  `include ../shared_setup.lmp` (the Cu/water channel every stretch run shares).
+# =====================================================================
+
+# ---- case parameters (this measurement's settings; -var still overrides) ----
+variable Tbot   index 330.0    # hot bottom wall (K)
+variable Ttop   index 270.0    # cold top wall (K) -> the built-in thermal gradient
+variable nequil index 12000    # equilibration steps (1 fs): still walls conduct
+                               # slowly, so longer than the isothermal cases';
+                               # the Push sheet quarters it to 3000
+variable nprod  index 20000    # production steps (multiple of 100): T(z) and the
+                               # bath energy tallies accumulate here
+variable binw   index 0.5      # profile bin width (A): fluid and wall T(z) share it
+
+include ../shared_setup.lmp
+
+# =====================================================================
+#  MEASUREMENT: interfacial thermal conductance
+#  Walls STILL (vwall stays 0; the shared block already anchors them).
+#  The two wall baths sit at Tbot and Ttop; their difference drives a
+#  heat current across the water. Equilibrate towards the thermal
+#  profile, then time-average T(z) and the cumulative bath energy.
+# =====================================================================
+
+# Guard: if Tbot == Ttop (e.g. an override set them equal) there is no
+# heat current and G is undefined - fail fast with a clear instruction
+# instead of silently reporting a divide-by-zero conductance.
+variable dTwall equal abs(v_Ttop-v_Tbot)
+if "${dTwall} < 1.0e-9" then &
+  "print 'ERROR: conductance needs a thermal gradient (got Tbot == Ttop == ${Tbot}).'" &
+  "print '       The case header sets a gradient by default; if you overrode it,'" &
+  "print '       give the walls different temperatures, e.g. -var Ttop 250'" &
+  "quit 1"
+
+run ${nequil}
+reset_timestep 0
+
+# wall faces (innermost wall-atom plane each side, read at production start):
+# the analyser fits its interfacial temperature jumps at these planes; the
+# anchor/bath split heights let it separate pinned planes from bath planes
+variable zfb  equal bound(wbot,zmax)
+variable zft  equal bound(wtop,zmin)
+variable area equal lx*ly                      # bath energy -> heat current per area
+print "Tbot ${Tbot}"          file   cuw_params.txt
+print "Ttop ${Ttop}"          append cuw_params.txt
+print "nequil ${nequil}"      append cuw_params.txt
+print "nprod ${nprod}"        append cuw_params.txt
+print "dt ${dt}"              append cuw_params.txt
+print "binw ${binw}"          append cuw_params.txt
+print "area ${area}"          append cuw_params.txt
+print "zface_bot ${zfb}"      append cuw_params.txt
+print "zface_top ${zft}"      append cuw_params.txt
+print "zsplit_bot ${zdb}"     append cuw_params.txt
+print "zsplit_top ${zdt}"     append cuw_params.txt
+
+# per-bin kinetic ingredients for the analyser's thermometers, water and wall
+# separately on the same ${binw} A grid. The water thermometer subtracts each
+# bin's mass-weighted mean velocity and counts only the 6 DOF SHAKE leaves
+# per molecule; Cu bins need no correction (the pinned anchor planes read
+# 0 K - the analyser separates them from the bath planes by z).
+variable nsamp equal floor(v_nprod/10)
+variable msq atom mass*(vx*vx+vy*vy+vz*vz)
+variable mvx atom mass*vx
+variable mvy atom mass*vy
+variable mvz atom mass*vz
+variable mm  atom mass
+compute  zke water chunk/atom bin/1d z lower ${binw} units box
+fix      fke water ave/chunk 10 ${nsamp} ${nprod} zke v_msq v_mvx v_mvy v_mvz v_mm &
+         file cuw_ke.profile
+group    wall union wbot wtop
+compute  zkw wall chunk/atom bin/1d z lower ${binw} units box
+fix      fkw wall ave/chunk 10 ${nsamp} ${nprod} zkw v_msq v_mvx v_mvy v_mvz v_mm &
+         file cuw_ke_wall.profile
+
+# cumulative energy each wall bath has exchanged with its layers. bbot/btop
+# in the shared block carry `tally yes`, so f_bbot / f_btop are those running
+# totals; the slope of each vs time is the energy in or out per unit time,
+# and dividing by the wall area gives the heat current J. At steady state
+# the two rates match in magnitude. The tally re-zeros at every `run`
+# command, so these totals count the production window only (verified:
+# the step-0 row of cuw_heat.dat reads 0 0).
+fix      fheat all ave/time 100 1 100 f_bbot f_btop file cuw_heat.dat
+
+# fluid temperature trace over production (c_watT subtracts the SHAKE DOF)
+fix      tout all ave/time 100 1 100 c_watT file cuw_conductance_T.dat
+
+# optional orientation trajectory for VMD/OVITO (production only; off by
+# default, pass -var dump 1)
+if "${dump} > 0" then &
+  "dump dvmd all xyz 1000 cuw_traj.xyz" &
+  "dump_modify dvmd element O H Cu Cu sort id"
+
+run ${nprod}
+print "Done. Analyse with:  python3 analyse_conductance.py"

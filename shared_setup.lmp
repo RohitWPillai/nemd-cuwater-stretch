@@ -1,0 +1,118 @@
+# ######################################################################
+# ##  SHARED SETUP  -  the Cu/water channel every stretch run includes ##
+# ##  TIP4P/2005 water between Cu(100) walls, periodic in x, y, with   ##
+# ##  the walls capping z. Each measurement's input file sets its own  ##
+# ##  Tbot / Ttop / nequil / nprod ABOVE its                           ##
+# ##  `include ../shared_setup.lmp` line; this file then loads the     ##
+# ##  pre-equilibrated channel (data.cuw_channel, built by build/) and ##
+# ##  wires the force field, wall roles and heat baths from them.      ##
+# ##  Walls are isothermal when Tbot == Ttop; the conductance run sets ##
+# ##  a colder Ttop to impose a thermal gradient.                      ##
+# ######################################################################
+#
+# This file EXPECTS Tbot, Ttop, nequil and nprod to be already defined by
+# the including script (see any of the four <measurement>.in files). The
+# wall-bath `tally yes` heat accounting below is read only by conductance.
+# Driven runs (slip, viscosity) set vwall above their include; the anchor
+# layers then translate at +/- vwall and drag the walls with them. When
+# vwall is nonzero this file also rebiases each bath Langevin to a per-bath
+# `compute temp/partial 0 1 1` (thermostat y,z only, so the driven x-DOF
+# stays unthermostatted; never temp/com - measured on this system, a
+# temp/com-biased bath pumps ~+16 K into the fluid even with zero drive).
+# Still-wall runs (vwall 0) keep the plain full-velocity bias.
+#
+# ---- parameters (override any with -var NAME value) ----
+variable eps_sl index 0.0256   # O-Cu LJ epsilon (eV): 0.0256 wets fully; 0.010 beads up
+variable vwall  index 0.0      # anchor drive speed along x, each wall +/- (A/ps)
+variable tdamp  index 0.1      # Langevin damping time (ps)
+variable dt     index 0.001    # timestep (ps): 1 fs for all measurement runs
+variable seed   index 90187    # RNG seed
+variable dump   index 0        # -var dump 1 -> write a VMD trajectory (cuw_traj.xyz); off by default
+variable acu    index 3.615    # Cu FCC lattice constant (A): must match the shipped channel
+
+# ---- derived ----
+variable zpl   equal 0.5*v_acu                 # (100) interplane spacing
+variable seed1 equal v_seed+3                  # distinct RNG streams per call site
+variable seed2 equal v_seed+7
+variable nrep  equal floor(v_nprod/100)        # ave/chunk: samples per block
+variable nfreq equal 100*v_nrep                # averaging window (<= nprod for nprod >= 100)
+# the averaging window needs nprod >= 100; a shorter (smoke) run gives a
+# zero-width window -> fail fast with a clear message, not a cryptic one.
+if "${nprod} < 100" then "print 'ERROR: nprod must be >= 100 (the averaging window)'" "quit 1"
+
+# ---- system: the pre-equilibrated channel (built by build/, shipped) ----
+units      metal
+atom_style full
+boundary   p p f                               # solid walls cap z; periodic x,y
+read_data  ../data.cuw_channel
+
+# ---- force field (locked; see the force-field table in ../README.md) ----
+pair_style   hybrid eam/alloy lj/cut 13.0 lj/cut/tip4p/long 1 2 1 1 0.1546 13.0 12.6
+kspace_style pppm/tip4p 1.0e-5
+kspace_modify slab 3.0
+pair_modify  shift yes mix arithmetic
+pair_coeff   * * eam/alloy ../Cu.lammps.eam NULL NULL Cu Cu
+pair_coeff   1 1 lj/cut/tip4p/long 0.008031034 3.1589
+pair_coeff   1 2 lj/cut/tip4p/long 0.0 0.0
+pair_coeff   2 2 lj/cut/tip4p/long 0.0 0.0
+pair_coeff   1 3 lj/cut ${eps_sl} 2.751
+pair_coeff   1 4 lj/cut ${eps_sl} 2.751
+pair_coeff   2 3 lj/cut 0.0 0.0
+pair_coeff   2 4 lj/cut 0.0 0.0
+bond_style   harmonic
+bond_coeff   1 1000.0 0.9572                   # nominal; SHAKE holds the geometry
+angle_style  harmonic
+angle_coeff  1 100.0 104.52
+
+# ---- wall roles: outer 2 (100) planes = rigid anchor (still, or carrying
+#      the drive), inner 4 = Langevin bath (the heat-exchange surface) ----
+variable zdb equal 3.5*v_zpl                   # anchor/bath split, bottom wall
+variable zdt equal lz-3.5*v_zpl                # anchor/bath split, top wall
+group   water type 1 2
+group   oxy   type 1
+group   wbot  type 3
+group   wtop  type 4
+region  rbot_d block INF INF INF INF INF ${zdb} units box
+region  rtop_d block INF INF INF INF ${zdt} INF units box
+group   drive_bot region rbot_d
+group   drive_top region rtop_d
+group   drive    union drive_bot drive_top
+group   bath_bot subtract wbot drive_bot
+group   bath_top subtract wtop drive_top
+variable ndrv equal count(drive)
+variable nwat equal count(water)
+if "${ndrv} != 288" then &
+  "print 'ERROR: anchor group holds ${ndrv} atoms, expected 288 (2 planes x 2 walls x 72)'" &
+  "quit 1"
+if "${nwat} != 1560" then &
+  "print 'ERROR: water group holds ${nwat} atoms, expected 1560 (520 molecules)'" &
+  "quit 1"
+
+# ---- dynamics: everything NVE + SHAKE; Langevin baths on the wall layers;
+#      anchors pinned (zero force + set velocity, so they translate rigidly
+#      and the drive reaches the fluid through the bath lattice) ----
+# The shipped data file carries equilibrated 300 K velocities, so there is
+# no `velocity create` here: every run warm-starts from that state.
+# `units box` is essential: no lattice is defined after read_data, and
+# `velocity set` defaults to lattice units (a hard error here).
+velocity drive_bot set -${vwall} 0.0 0.0 units box
+velocity drive_top set  ${vwall} 0.0 0.0 units box
+fix     nve  all nve
+fix     shk  water shake 0.0001 20 0 b 1 a 1
+fix     pin  drive setforce 0.0 0.0 0.0        # rigid wall anchor
+fix     bbot bath_bot langevin ${Tbot} ${Tbot} ${tdamp} ${seed1} tally yes
+fix     btop bath_top langevin ${Ttop} ${Ttop} ${tdamp} ${seed2} tally yes
+# driven runs only: rebias each bath to thermostat y,z (see the header note)
+if "${vwall} != 0.0" then &
+  "compute tpb bath_bot temp/partial 0 1 1" &
+  "compute tpt bath_top temp/partial 0 1 1" &
+  "fix_modify bbot temp tpb" &
+  "fix_modify btop temp tpt"
+fix     boxwall all wall/reflect zlo EDGE zhi EDGE   # bounce stray atoms off z-faces
+compute watT water temp                        # subtracts the SHAKE-removed DOF
+timestep ${dt}
+thermo       1000
+thermo_style custom step temp c_watT pe etotal press
+reset_timestep 0
+# --- end of shared setup; each <measurement>.in continues below with its
+#     own measurement section ---

@@ -1,0 +1,16 @@
+Reference run for the conductance sheet: the converged tier your 20 ps run is
+overlaid against. It is conductance.in itself run longer - 150 ps of
+equilibration toward the steady thermal profile + 200 ps of averaging at 1 fs
+(nequil 150000, nprod 200000), seed 90187, Tbot 330 K / Ttop 270 K, run
+2026-07-05.
+
+follow/  lmp_serial -in conductance.in -var nequil 150000 -var nprod 200000
+
+analyse_conductance.py reads this folder itself: it overlays the reference
+T(z) and cumulative bath tallies against your run's and quotes the reference
+jumps and G from this converged window. To rebuild it, run the command inside
+conductance/ (about 2 h on one core) and copy the five cuw_* files in. The
+shipped set came from the equivalent two-segment restart chain (the 150 ps
+equilibration segment, then the 200 ps production segment continued from its
+restart), which changes nothing but the thermostat noise stream at the
+segment boundary.

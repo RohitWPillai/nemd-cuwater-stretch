@@ -1,0 +1,74 @@
+# =====================================================================
+#  NEMD Summer School 2026 - Day 1 stretch (Cu/water channel)
+#  MEASUREMENT: interfacial density / layering
+#
+#  How much does water layer up against a copper wall? Read the density
+#  profile rho(z): a flat bulk plateau in the middle of the channel,
+#  oscillating layers within ~10 A of each wall - the Day-1 layering
+#  measurement again, now in g/cm3 against real water.
+#
+#  Run from this folder via the Cirrus wrapper:
+#     ../submit.sh density.in        (locally: lmp_serial -in density.in)
+#  then: python3 analyse_density.py
+#
+#  This file sets its case parameters, then includes the shared setup with
+#  `include ../shared_setup.lmp` (the Cu/water channel every stretch run shares).
+# =====================================================================
+
+# ---- case parameters (this measurement's settings; -var still overrides) ----
+variable Tbot   index 300.0    # wall bath temperature (K); the Push sheet raises both
+variable Ttop   index 300.0
+variable nequil index 10000    # equilibration steps (1 fs)
+variable nprod  index 20000    # production steps (multiple of 100): rho(z) accumulates here
+variable binw   index 0.5      # raw density bin width (A); the analyser's 1.5 A smoothing assumes 0.5
+
+include ../shared_setup.lmp
+
+# =====================================================================
+#  MEASUREMENT: interfacial density
+#  Walls still, isothermal. Equilibrate, then time-average a fine
+#  density profile rho(z) across the channel.
+# =====================================================================
+# The Push sheet raises both wall temperatures. Heat enters the water only
+# through the walls, and nequil is too short for the water to reach a new
+# temperature through them alone - so when Tbot is not the shipped 300 K,
+# an extra Langevin thermostat runs on the water DURING EQUILIBRATION ONLY.
+# Production is always NVE + SHAKE with the wall baths as the only thermostats.
+variable seed3 equal v_seed+11
+if "${Tbot} != 300.0" then &
+  "fix weq water langevin ${Tbot} ${Tbot} ${tdamp} ${seed3}"
+run ${nequil}
+if "${Tbot} != 300.0" then "unfix weq"
+reset_timestep 0
+
+# wall faces (innermost wall-atom plane each side, read at production start):
+# the analyser measures its near-wall layering windows from these
+variable zfb equal bound(wbot,zmax)
+variable zft equal bound(wtop,zmin)
+print "Tbot ${Tbot}"          file   cuw_params.txt
+print "Ttop ${Ttop}"          append cuw_params.txt
+print "nequil ${nequil}"      append cuw_params.txt
+print "nprod ${nprod}"        append cuw_params.txt
+print "dt ${dt}"              append cuw_params.txt
+print "binw ${binw}"          append cuw_params.txt
+print "zface_bot ${zfb}"      append cuw_params.txt
+print "zface_top ${zft}"      append cuw_params.txt
+
+# rho(z): O-atom number density on ${binw} A bins, accumulated over the whole
+# production window (the analyser converts O counts to g/cm3 of water)
+variable nsamp equal floor(v_nprod/10)
+compute  crho oxy chunk/atom bin/1d z lower ${binw} units box
+fix      frho oxy ave/chunk 10 ${nsamp} ${nprod} crho density/number &
+         file cuw_density.profile
+
+# fluid temperature trace over production (c_watT subtracts the SHAKE DOF)
+fix      tout all ave/time 100 1 100 c_watT file cuw_density_T.dat
+
+# optional orientation trajectory for VMD/OVITO (production only; off by
+# default, pass -var dump 1)
+if "${dump} > 0" then &
+  "dump dvmd all xyz 1000 cuw_traj.xyz" &
+  "dump_modify dvmd element O H Cu Cu sort id"
+
+run ${nprod}
+print "Done. Analyse with:  python3 analyse_density.py"

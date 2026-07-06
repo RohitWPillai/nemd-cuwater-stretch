@@ -1,0 +1,11 @@
+Tbot 330.0
+Ttop 270.0
+nequil 150000
+nprod 200000
+dt 0.001
+binw 0.5
+area 470.4561
+zface_bot 12.7491063960218
+zface_top 46.8819105931273
+zsplit_bot 6.32625
+zsplit_top 53.32125

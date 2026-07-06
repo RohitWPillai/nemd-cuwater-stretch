@@ -1,0 +1,104 @@
+# =====================================================================
+#  NEMD Summer School 2026 - Day 1 stretch (Cu/water channel)
+#  VALIDATE: shipping gates for data.cuw_channel (SPEC section 5.5).
+#  Instructor-side; students do not run this file.
+#
+#  Reads the candidate data file and runs a 20 ps NVE + SHAKE window at
+#  1 fs with NO thermostats anywhere, writing:
+#    cuw_validate_energy.dat    total energy series   (drift gate)
+#    cuw_validate_msd.dat       bath-layer Cu MSD     (crystallinity gate)
+#    cuw_validate_density.profile  rho(z), 0.5 A bins (vacuum-pocket gate)
+#    cuw_validate_params.txt    wall faces, atom count, dt
+#  Score the gates with:  python3 validate.py
+#
+#  Run from this folder:  lmp_serial -in validate.in
+# =====================================================================
+
+# ---- parameters (override any with -var NAME value) ----
+variable datain index data.cuw_channel   # candidate configuration
+variable eps_sl index 0.0256             # O-Cu LJ epsilon (eV): must match the build
+variable acu    index 3.615              # Cu FCC lattice constant (A): must match the build
+variable dt     index 0.001              # drift-gate timestep (ps): 1 fs per the gate contract
+variable nrun   index 20000              # window steps (20 ps at 1 fs)
+
+# ---- system ----
+units      metal
+atom_style full
+boundary   p p f
+read_data  ${datain}
+
+# ---- force field (locked; identical to build.in) ----
+pair_style   hybrid eam/alloy lj/cut 13.0 lj/cut/tip4p/long 1 2 1 1 0.1546 13.0 12.6
+kspace_style pppm/tip4p 1.0e-5
+kspace_modify slab 3.0
+pair_modify  shift yes mix arithmetic
+pair_coeff   * * eam/alloy ../Cu.lammps.eam NULL NULL Cu Cu
+pair_coeff   1 1 lj/cut/tip4p/long 0.008031034 3.1589
+pair_coeff   1 2 lj/cut/tip4p/long 0.0 0.0
+pair_coeff   2 2 lj/cut/tip4p/long 0.0 0.0
+pair_coeff   1 3 lj/cut ${eps_sl} 2.751
+pair_coeff   1 4 lj/cut ${eps_sl} 2.751
+pair_coeff   2 3 lj/cut 0.0 0.0
+pair_coeff   2 4 lj/cut 0.0 0.0
+bond_style   harmonic
+bond_coeff   1 1000.0 0.9572             # nominal; SHAKE holds the geometry
+angle_style  harmonic
+angle_coeff  1 100.0 104.52
+
+# ---- wall roles (same split planes as build.in: outer 2 = anchor,
+#      inner 4 = bath; here the bath layers are free Cu) ----
+variable zpl  equal 0.5*v_acu            # (100) interplane spacing
+variable zdb  equal 3.5*v_zpl            # anchor/bath split, bottom wall
+variable zdt  equal lz-3.5*v_zpl         # anchor/bath split, top wall
+group   water type 1 2
+group   oxy   type 1
+group   wbot  type 3
+group   wtop  type 4
+region  rbot_d block INF INF INF INF INF ${zdb} units box
+region  rtop_d block INF INF INF INF ${zdt} INF units box
+group   drive_bot region rbot_d
+group   drive_top region rtop_d
+group   drive    union drive_bot drive_top
+group   bath_bot subtract wbot drive_bot
+group   bath_top subtract wtop drive_top
+variable ndrv equal count(drive)
+if "${ndrv} != 288" then &
+  "print 'ERROR: anchor group holds ${ndrv} atoms, expected 288 (2 planes x 2 walls x 72)'" &
+  "quit 1"
+
+fix     pin     drive setforce 0.0 0.0 0.0   # rigid wall anchor
+velocity drive set 0.0 0.0 0.0
+fix     boxwall all wall/reflect zlo EDGE zhi EDGE
+
+# ---- dynamics: NVE + SHAKE only - the drift gate forbids thermostats ----
+fix     nve all nve
+fix     shk water shake 0.0001 20 0 b 1 a 1
+compute watT water temp                  # subtracts the SHAKE-removed DOF
+timestep ${dt}
+reset_timestep 0
+
+# ---- gate outputs ----
+variable zfb    equal bound(wbot,zmax)   # innermost wall atom, bottom = wall face
+variable zft    equal bound(wtop,zmin)   # innermost wall atom, top
+variable natoms equal atoms
+print "natoms ${natoms}"     file   cuw_validate_params.txt
+print "zface_bot ${zfb}"     append cuw_validate_params.txt
+print "zface_top ${zft}"     append cuw_validate_params.txt
+print "dt ${dt}"             append cuw_validate_params.txt
+print "nrun ${nrun}"         append cuw_validate_params.txt
+
+variable etot equal etotal
+fix eout all ave/time 20 1 20 v_etot c_watT file cuw_validate_energy.dat
+
+compute msdb bath_bot msd                # bath layers only: the anchors are pinned,
+compute msdt bath_top msd                # so all-Cu MSD would dilute the gate
+fix msdout all ave/time 100 1 100 c_msdb[4] c_msdt[4] file cuw_validate_msd.dat
+
+variable nsamp equal v_nrun/10
+compute cO oxy chunk/atom bin/1d z lower 0.5 units box
+fix dprof oxy ave/chunk 10 ${nsamp} ${nrun} cO density/number file cuw_validate_density.profile
+
+thermo       2000
+thermo_style custom step temp c_watT pe etotal press
+run ${nrun}
+print "Validation window done. Score the gates with:  python3 validate.py"

@@ -1,0 +1,12 @@
+Reference run for the viscosity sheet: the converged tier your 20 ps run is
+compared against. It is viscosity.in itself run longer - 20 ps of equilibration
++ 200 ps of averaging at 1 fs (nequil 20000, nprod 200000), seed 90187, run
+2026-07-05, at the default drive (vwall 0.5 A/ps, eps_sl 0.0256 eV).
+
+follow/  lmp_serial -in viscosity.in -var nequil 20000 -var nprod 200000
+
+analyse_viscosity.py reads this folder itself: it quotes the converged eta
+and, when your run shares the reference's eps_sl and vwall, overlays the
+reference velocity profile and its mean stress on the figure. To rebuild it,
+run the command inside viscosity/ (about 80 min on one core) and copy the
+five cuw_* files in.

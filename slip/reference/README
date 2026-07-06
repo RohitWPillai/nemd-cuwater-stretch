@@ -1,0 +1,13 @@
+Reference runs for the slip sheet: the converged tier your 20 ps run is compared
+against. Both are slip.in itself run longer - 20 ps of equilibration + 100 ps of
+averaging at 1 fs (nequil 20000, nprod 100000), seed 90187, run 2026-07-05.
+
+follow/  eps_sl 0.0256 eV (the wetting default):
+         lmp_serial -in slip.in -var nequil 20000 -var nprod 100000
+push/    eps_sl 0.010 eV (the Push value):
+         lmp_serial -in slip.in -var nequil 20000 -var nprod 100000 -var eps_sl 0.010
+
+analyse_slip.py reads these folders itself: it quotes both converged slip
+lengths and, when one of the two runs shares your run's eps_sl and vwall,
+overlays that profile on the figure. To rebuild a folder, run its command inside slip/ (about 40 min on one
+core) and copy the four cuw_* files in.

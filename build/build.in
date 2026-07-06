@@ -1,0 +1,182 @@
+# =====================================================================
+#  NEMD Summer School 2026 - Day 1 stretch (Cu/water channel)
+#  BUILD: constructs and equilibrates the channel that ships as
+#  data.cuw_channel. Instructor-side; students do not run this file.
+#
+#  Cu(100) walls, 6 (100) planes each (outer 2 = rigid anchor, inner
+#  4 = Langevin bath), TIP4P/2005 water in a ~34 A gap. Stages:
+#    minimise -> relax (bath + water Langevin, 2 fs)
+#             -> equilibrate (bath Langevin only, 2 fs)
+#             -> accumulate rho(z) -> write_data
+#
+#  Run from this folder:  lmp_serial -in build.in
+#  Short probe (1000 steps, temporary data file):
+#     lmp_serial -in build.in -var nrelax 1000 -var nequil 0 \
+#                -var nprof 0 -var dataout probe_data.tmp
+# =====================================================================
+
+# ---- parameters (override any with -var NAME value) ----
+variable nwater  index 520     # water molecule count (density calibration sets this)
+variable eps_sl  index 0.0256  # O-Cu LJ epsilon (eV): fully wetting
+variable Twall   index 300.0   # bath temperature (K)
+variable acu     index 3.615   # Cu FCC lattice constant (A)
+variable nxy     index 6       # lateral (100) unit cells: Lx = Ly = nxy*acu
+variable nzw     index 6       # (100) planes per wall (outer 2 = anchor)
+variable gappl   index 19      # water gap in (100) plane spacings (34.34 A)
+variable aw      index 4.338   # water seeding FCC constant (= Lx/5, commensurate)
+variable sgap    index 2.0     # wall-surface to seeding-region standoff (A)
+variable tdamp   index 0.1     # Langevin damping time (ps)
+variable dt      index 0.002   # equilibration timestep (ps)
+variable seed    index 90187   # RNG seed
+variable nrelax  index 25000   # stage-2 steps: bath + water Langevin (50 ps)
+variable nequil  index 75000   # stage-3 steps: bath Langevin only (150 ps)
+variable nprof   index 10000   # stage-4 steps: rho(z) accumulation (multiple of 10)
+variable dataout index data.cuw_channel   # write_data target
+
+# ---- derived geometry (walls snap to the Cu lattice; the outermost
+#      planes stay >= 3.6 A off the z faces: an atom created ON a z face
+#      of a p p f box is silently deleted) ----
+variable zpl   equal 0.5*v_acu               # (100) interplane spacing
+variable Lx    equal v_nxy*v_acu
+variable zw0b  equal 2.0*v_zpl               # outermost bottom-wall plane
+variable zw1b  equal v_zw0b+(v_nzw-1)*v_zpl  # bottom wall surface plane
+variable zw0t  equal v_zw1b+v_gappl*v_zpl    # top wall surface plane
+variable zw1t  equal v_zw0t+(v_nzw-1)*v_zpl  # outermost top-wall plane
+variable Lz    equal v_zw1t+2.0*v_zpl
+variable fz    equal 0.5*v_zpl               # region margin: half a plane spacing
+variable rblo  equal v_zw0b-v_fz
+variable rbhi  equal v_zw1b+v_fz
+variable rtlo  equal v_zw0t-v_fz
+variable rthi  equal v_zw1t+v_fz
+variable zdb   equal v_zw0b+1.5*v_zpl        # anchor/bath split, bottom wall
+variable zdt   equal v_zw1t-1.5*v_zpl        # anchor/bath split, top wall
+variable fllo  equal v_zw1b+v_sgap           # water seeding slab
+variable flhi  equal v_zw0t-v_sgap
+variable seed1 equal v_seed+3                # distinct RNG streams per call site
+variable seed2 equal v_seed+7
+variable seed3 equal v_seed+11
+variable seed4 equal v_seed+13
+
+# ---- system: box, Cu(100) walls (type 3 bottom / 4 top), water fill ----
+units      metal
+atom_style full
+boundary   p p f                             # solid walls cap z; periodic x,y
+region     sim block 0 ${Lx} 0 ${Lx} 0 ${Lz} units box
+create_box 4 sim bond/types 1 angle/types 1 &
+           extra/bond/per/atom 2 extra/angle/per/atom 1 extra/special/per/atom 2
+lattice    fcc ${acu}
+region     rbot block INF INF INF INF ${rblo} ${rbhi} units box
+region     rtop block INF INF INF INF ${rtlo} ${rthi} units box
+create_atoms 3 region rbot                   # type 3 = bottom wall Cu
+create_atoms 4 region rtop                   # type 4 = top wall Cu
+
+molecule   h2o h2o.mol                       # TIP4P/2005 geometry + charges
+lattice    fcc ${aw}
+region     rfl block INF INF INF INF ${fllo} ${flhi} units box
+create_atoms 0 region rfl mol h2o ${seed}    # random orientation per site
+
+mass 1 15.9994                               # O
+mass 2 1.008                                 # H
+mass 3 63.546                                # Cu (bottom wall)
+mass 4 63.546                                # Cu (top wall)
+
+# ---- trim the seeded fill to exactly nwater molecules: delete every
+#      (nmol0/ndel)th molecule ID, an even spread over the insertion
+#      raster (delete_atoms random count is atom-based, not exact per
+#      molecule; this selection is exact and reproducible) ----
+group    water type 1 2
+variable nmol0 equal count(water)/3
+variable ndel  equal round(v_nmol0-v_nwater)
+print    "water fill: ${nmol0} molecules seeded; deleting ${ndel} for nwater ${nwater}"
+if "${ndel} < 0" then &
+  "print 'ERROR: nwater exceeds the seeding-lattice sites (${nmol0})'" &
+  "quit 1"
+variable pick atom (mol>0)*((floor(mol*v_ndel/v_nmol0)-floor((mol-1)*v_ndel/v_nmol0))>0)
+if "${ndel} > 0" then &
+  "group gdel variable pick" &
+  "delete_atoms group gdel mol yes compress no" &
+  "group gdel delete"
+# deletion leaves atom-ID gaps; they stay: an ID reset reorders atoms and
+# the tip4p styles need each O's two H at O-ID+1,+2 (velocity uses loop geom)
+variable nmol equal count(water)/3
+if "${nmol} != ${nwater}" then &
+  "print 'ERROR: trim left ${nmol} molecules, expected ${nwater}'" &
+  "quit 1"
+
+# ---- force field (locked; see ../../references/forcefield/FORCEFIELD.md) ----
+pair_style   hybrid eam/alloy lj/cut 13.0 lj/cut/tip4p/long 1 2 1 1 0.1546 13.0 12.6
+kspace_style pppm/tip4p 1.0e-5
+kspace_modify slab 3.0
+pair_modify  shift yes mix arithmetic
+pair_coeff   * * eam/alloy ../Cu.lammps.eam NULL NULL Cu Cu
+pair_coeff   1 1 lj/cut/tip4p/long 0.008031034 3.1589
+pair_coeff   1 2 lj/cut/tip4p/long 0.0 0.0
+pair_coeff   2 2 lj/cut/tip4p/long 0.0 0.0
+pair_coeff   1 3 lj/cut ${eps_sl} 2.751
+pair_coeff   1 4 lj/cut ${eps_sl} 2.751
+pair_coeff   2 3 lj/cut 0.0 0.0
+pair_coeff   2 4 lj/cut 0.0 0.0
+bond_style   harmonic
+bond_coeff   1 1000.0 0.9572                 # nominal; SHAKE holds the geometry
+angle_style  harmonic
+angle_coeff  1 100.0 104.52
+
+# ---- wall roles: outer 2 planes rigid anchor, inner 4 Langevin bath ----
+group   wbot type 3
+group   wtop type 4
+group   oxy  type 1
+region  rbot_d block INF INF INF INF INF ${zdb} units box
+region  rtop_d block INF INF INF INF ${zdt} INF units box
+group   drive_bot region rbot_d
+group   drive_top region rtop_d
+group   drive    union drive_bot drive_top
+group   bath_bot subtract wbot drive_bot
+group   bath_top subtract wtop drive_top
+variable ncu    equal count(wbot)+count(wtop)
+variable ncuexp equal 4*v_nzw*v_nxy^2        # 2 walls * nzw planes * 2*nxy^2 atoms/plane
+if "${ncu} != ${ncuexp}" then &
+  "print 'ERROR: wall atom count ${ncu}, expected ${ncuexp}'" &
+  "quit 1"
+
+fix     pin     drive setforce 0.0 0.0 0.0   # rigid wall anchor
+fix     boxwall all wall/reflect zlo EDGE zhi EDGE  # bounce stray atoms off z faces
+
+# ---- minimise the seeded packing (SHAKE off: the stiff harmonic bond/
+#      angle terms hold the water geometry during minimisation) ----
+thermo       100
+thermo_style custom step temp pe etotal press
+minimize     1.0e-4 1.0e-6 1000 10000
+reset_timestep 0
+
+# ---- dynamics: everything NVE + SHAKE; Langevin baths on the wall layers ----
+velocity all   create ${Twall} ${seed} mom yes rot yes dist gaussian loop geom
+velocity drive set 0.0 0.0 0.0               # anchors stay still
+fix     nve  all nve
+fix     shk  water shake 0.0001 20 0 b 1 a 1
+fix     bbot bath_bot langevin ${Twall} ${Twall} ${tdamp} ${seed1}
+fix     btop bath_top langevin ${Twall} ${Twall} ${tdamp} ${seed2}
+compute watT water temp                      # subtracts the SHAKE-removed DOF
+thermo_style custom step temp c_watT pe etotal press
+timestep ${dt}
+
+# ---- stage 2: extra Langevin on the water for the initial relaxation ----
+fix     wlang water langevin ${Twall} ${Twall} ${tdamp} ${seed3}
+run     ${nrelax}
+unfix   wlang
+
+# ---- stage 3: bath-only equilibration ----
+run     ${nequil}
+
+# ---- stage 4: accumulate rho(z): O-atom number density, raw 0.5 A bins
+#      (the calibration script converts to g/cm3 and smooths). The timestep
+#      reset aligns ave/chunk output with the end of this run: the fix only
+#      writes at multiples of its window, counted from step 0 ----
+variable nrep equal v_nprof/10
+if "${nprof} > 0" then &
+  "reset_timestep 0" &
+  "compute cO oxy chunk/atom bin/1d z lower 0.5 units box" &
+  "fix dprof oxy ave/chunk 10 ${nrep} ${nprof} cO density/number file cuw_build_density.profile" &
+  "run ${nprof}"
+
+write_data ${dataout} nocoeff
+print "Build done: ${nmol} waters, box ${Lx} x ${Lx} x ${Lz} A, data file ${dataout}"

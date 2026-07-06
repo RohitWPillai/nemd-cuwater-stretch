@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 log.lammps
 cuw_*.png
+!figures/cuw_*.png

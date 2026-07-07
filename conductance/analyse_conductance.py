@@ -65,9 +65,12 @@ def fit_extrap(z, T, z0, name):
         raise SystemExit(f"conductance fit: fewer than 3 occupied bins in the {name} window - "
                          "check the run completed and the binning/geometry.")
     n = len(z)
+    sxx = np.sum((z - z.mean()) ** 2)
+    if sxx <= 0:                              # all bins at one z: no gradient (se would /0)
+        raise SystemExit(f"conductance fit: all {name} z coordinates are identical - "
+                         "check the binning/geometry.")
     s, c = np.polyfit(z, T, 1)
     resid = T - (s * z + c)
-    sxx = np.sum((z - z.mean()) ** 2)
     sig2 = np.sum(resid ** 2) / (n - 2)
     se = float(np.sqrt(sig2 * (1.0 / n + (z0 - z.mean()) ** 2 / sxx)))
     ss = np.sum((T - T.mean()) ** 2)
@@ -276,11 +279,15 @@ def main():
                      "job (squeue --me) to finish; otherwise run `lmp_serial -in "
                      "conductance.in` first.")
     par = read_params("cuw_params.txt")
-    this_ps = par["nprod"] * par["dt"]         # this run's length, available even if it fails
+    this_ps = par.get("nprod", 0) * par.get("dt", 0)   # this run's length, .get so a corrupt params can't KeyError
 
-    # Reference FIRST: the jumps and G the sheet quotes come from here, and it is
-    # printed below no matter what this short run does - nothing may abort before it.
-    ref = load_reference()
+    # Reference FIRST: loaded before ANY this-run value (a params key OR a file read), so a
+    # corrupt/incompatible this-run params or a truncated file still shows the converged answer.
+    # A corrupt shipped reference degrades to no reference, not an abort.
+    try:
+        ref = load_reference()
+    except (SystemExit, OSError, KeyError, ValueError):
+        ref = None
 
     print("\nStretch sheet 4: interfacial conductance")
 
@@ -326,9 +333,9 @@ def main():
             print("       not the measured conductance - G is quoted from the shipped reference below)")
         print(f"    water temperature    {run['t_mid']:.1f} K at mid-channel over the "
               f"{run['t_ps']:.0f} ps production window")
-    except (SystemExit, ZeroDivisionError, FloatingPointError, ValueError) as e:
-        # any numeric degeneracy in this run's scoring degrades to the reference,
-        # never a fatal abort (programmer errors like KeyError still surface)
+    except (SystemExit, ZeroDivisionError, FloatingPointError, ValueError, KeyError, OSError) as e:
+        # any numeric degeneracy OR an incompatible/truncated this-run file degrades to the
+        # reference, never a fatal abort (true programmer errors like AttributeError still surface)
         print(f"    this run did not produce a usable conductance measurement ({e});")
         print("      the shipped reference below is the value to read.")
         run = None
@@ -347,10 +354,10 @@ def main():
             print(f"      G_bot = {ref['Gb']:.0f} +/- {ref['seGb']:.0f} MW/m2K, "
                   f"G_top = {ref['Gt']:.0f} +/- {ref['seGt']:.0f} MW/m2K   "
                   "(G = J / dT per wall)")
-        if not (np.isclose(par["Tbot"], rpar["Tbot"]) and
-                np.isclose(par["Ttop"], rpar["Ttop"])):
-            print(f"      (no shipped reference at Tbot = {par['Tbot']:g} K, "
-                  f"Ttop = {par['Ttop']:g} K - the figure shows this run alone)")
+        if run is not None and not (np.isclose(par.get("Tbot"), rpar["Tbot"]) and
+                                    np.isclose(par.get("Ttop"), rpar["Ttop"])):
+            print(f"      (no shipped reference at Tbot = {par.get('Tbot'):g} K, "
+                  f"Ttop = {par.get('Ttop'):g} K - the figure shows this run alone)")
             ref = None
     if run is not None:
         plot(run, ref=ref)

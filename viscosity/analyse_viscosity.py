@@ -206,24 +206,29 @@ def main():
                      "job (squeue --me) to finish; otherwise run `lmp_serial -in "
                      "viscosity.in` first.")
     par = read_params("cuw_params.txt")
-    vwall, zfb, zft = par["vwall"], par["zface_bot"], par["zface_top"]
-    h = zft - zfb
-    t_ps = par["nprod"] * par["dt"]
 
-    ns_slope = 2 * vwall / h                 # slope if the water stuck to the walls
-
-    # Reference FIRST: loaded before ANY this-run read, so a truncated/incomplete
-    # this-run file (e.g. a killed job) still shows the converged answer.
-    ref = load_reference()
+    # Reference FIRST: loaded before ANY this-run value (a params key OR a file read), so a
+    # corrupt/incompatible this-run params or a truncated/incomplete output file still shows
+    # the converged answer. A corrupt shipped reference degrades to no overlay, not an abort.
+    try:
+        ref = load_reference()
+    except (SystemExit, OSError, KeyError, ValueError):
+        ref = None
+    t_ps = par.get("nprod", 0) * par.get("dt", 0)
 
     print("\nStretch sheet 3: viscosity")
 
     # ---- this run's own short, noisy measurement; any failure - a degenerate fit,
-    #      no drive, OR an incomplete output file (a killed job) - degrades to the
-    #      reference-only summary, never an abort. ----
+    #      no drive, an incompatible params, OR an incomplete output file - degrades
+    #      to the reference-only summary, never an abort. ----
     z = vx = pxz_series = zo = tbin = fit = None
+    vwall = zfb = zft = None
+    ns_slope = 0.0
     t_heated = False
     try:
+        vwall, zfb, zft = par["vwall"], par["zface_bot"], par["zface_top"]
+        h = zft - zfb
+        ns_slope = 2 * vwall / h             # slope if the water stuck to the walls
         z, n, vx = read_profile("cuw_vx.profile")
         m = n > 0.5                          # keep only bins that hold atoms
         z, vx = z[m], vx[m]
@@ -246,12 +251,21 @@ def main():
         # Sanity of the short run - all NON-FATAL (the reference below is always shown).
         tol = 1.15
         flat = fit["s"] < 0.25 * ns_slope
+        # a gross overshoot (not from viscous heating) means the fit is inconsistent with the
+        # wall speed - eta is unusable, so treat it like flat: suppress the number, defer to ref.
+        severe = (not flat) and (not t_heated) and (abs(fit["s"]) > 2.0 * ns_slope
+                 or max(abs(v_face_bot), abs(v_face_top)) > 2.0 * vwall)
         if flat:
             print(f"    water velocity at the wall faces = {v_face_bot:+.3f} / {v_face_top:+.3f} "
                   f"A/ps  (wall speed -/+{vwall:g} A/ps)")
             print("    NOTE: the central slope is far below the no-slip line (flat or reversed);")
             print("      on a short run this is usually noise. eta = |p_xz|/|dvx/dz| is unreliable")
             print("      here - read it as indicative only and rely on the shipped reference below.")
+        elif severe:
+            print(f"    water velocity at the wall faces = {v_face_bot:+.3f} / {v_face_top:+.3f} "
+                  f"A/ps  (wall speed -/+{vwall:g} A/ps)")
+            print("    NOTE: the fitted slope/wall-face speed is grossly inconsistent with the")
+            print("      imposed wall speed - this short-run eta is unusable. Rely on the reference.")
         elif (not t_heated) and (abs(fit["s"]) > tol * ns_slope
                                  or max(abs(v_face_bot), abs(v_face_top)) > tol * vwall):
             # noisy-but-driving (skip once viscous heating sets in - its own note fires below)
@@ -264,11 +278,12 @@ def main():
 
         print(f"    mean shear stress    p_xz = {fit['pxz']:+.1f} +/- {fit['se_p']:.1f} bar "
               f"over the {t_ps:.0f} ps production window")
-        if flat:
-            # eta = |p_xz|/|s| is meaningless when the shear rate is ~0/reversed; the
-            # floored divisor would print a huge artefact, so suppress the number.
-            print("    viscosity            not meaningfully determined on this run (the shear")
-            print("      rate is flat or reversed - see the NOTE); use the shipped reference below.")
+        if flat or severe:
+            # eta = |p_xz|/|s| is meaningless when the shear is ~0/reversed or the fit is
+            # inconsistent with the wall; the floored divisor would print an artefact - suppress it.
+            print("    viscosity            not meaningfully determined on this run (the fit is")
+            print("      flat/reversed or inconsistent with the wall - see the NOTE); use the")
+            print("      shipped reference below.")
         else:
             print(f"    viscosity            eta = |p_xz| / (dvx/dz) = "
                   f"{fit['eta']:.2f} +/- {fit['se_eta']:.2f} mPa*s")
@@ -282,7 +297,7 @@ def main():
             print("      -> more than 10 K above the bath: viscous heating has set in - the")
             print("         channel is no longer isothermal, so a single eta no longer")
             print("         describes it (read T(z) in the figure).")
-    except (SystemExit, ZeroDivisionError, FloatingPointError, ValueError) as e:
+    except (SystemExit, ZeroDivisionError, FloatingPointError, ValueError, KeyError, OSError) as e:
         print(f"    {e}")
 
     # shipped reference tier - ALWAYS shown, whatever this run did above
@@ -293,13 +308,13 @@ def main():
         print(f"      eta = {ref['eta']:.2f} +/- {ref['se_eta']:.2f} mPa*s at "
               f"vwall {ref['par']['vwall']:g} A/ps  (R^2 = {ref['r2']:.3f}, "
               f"mid-channel {ref['t_mid']:.1f} K)")
-        if not (np.isclose(par["eps_sl"], ref["par"]["eps_sl"]) and
-                np.isclose(par["vwall"], ref["par"]["vwall"])):
-            print(f"      (no shipped reference at eps_sl = {par['eps_sl']:g} eV, "
-                  f"vwall = {par['vwall']:g} A/ps - the figure shows this run alone)")
+        if vwall is not None and not (np.isclose(par.get("eps_sl"), ref["par"]["eps_sl"]) and
+                                      np.isclose(vwall, ref["par"]["vwall"])):
+            print(f"      (no shipped reference at eps_sl = {par.get('eps_sl'):g} eV, "
+                  f"vwall = {vwall:g} A/ps - the figure shows this run alone)")
             overlay = None
-    if z is not None and zo is not None:
-        plot(z, vx, fit, zfb, zft, par["Tbot"], zo, tbin, t_ps, pxz_series, ref=overlay)
+    if z is not None and zo is not None and zfb is not None:
+        plot(z, vx, fit, zfb, zft, par.get("Tbot", 300.0), zo, tbin, t_ps, pxz_series, ref=overlay)
     else:
         print("    (no figure - this run's output was incomplete; the reference above is the value)")
 

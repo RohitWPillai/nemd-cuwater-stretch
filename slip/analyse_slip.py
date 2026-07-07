@@ -158,23 +158,28 @@ def main():
             sys.exit(f"{f} not found. If you submitted with ../submit.sh, wait for the "
                      "job (squeue --me) to finish; otherwise run `lmp_serial -in slip.in` first.")
     par = read_params("cuw_params.txt")
-    vwall, zfb, zft = par["vwall"], par["zface_bot"], par["zface_top"]
-    h = zft - zfb
-    t_ps = par["nprod"] * par["dt"]
 
-    # Reference FIRST: loaded before ANY this-run read, so a truncated/incomplete
-    # this-run file (e.g. a job killed mid-write) still shows the converged answer.
-    ref = {t: load_reference(t) for t in ("follow", "push")}
+    # Reference FIRST: loaded before ANY this-run value (a params key OR a file read), so a
+    # corrupt/incompatible this-run params or a truncated/incomplete output file still shows
+    # the converged answer. A corrupt shipped reference degrades to no overlay, not an abort.
+    try:
+        ref = {t: load_reference(t) for t in ("follow", "push")}
+    except (SystemExit, OSError, KeyError, ValueError):
+        ref = {"follow": None, "push": None}
     tags = {"follow": "the wetting default", "push": "the Push value"}
     have = [t for t in ("follow", "push") if ref[t]]
+    t_ps = par.get("nprod", 0) * par.get("dt", 0)
 
     print("\nStretch sheet 2: slip length")
 
     # ---- this run's own short, noisy measurement. Any failure - a degenerate fit,
-    #      no drive, OR an incomplete output file (a killed job) - degrades to the
-    #      reference-only summary below, never an abort. ----
+    #      no drive, an incompatible params, OR an incomplete output file - degrades
+    #      to the reference-only summary below, never an abort. ----
     z = vx = s = c = b = se_b = None
+    vwall = zfb = zft = None
     try:
+        vwall, zfb, zft = par["vwall"], par["zface_bot"], par["zface_top"]
+        h = zft - zfb
         z, n, vx = read_profile("cuw_vx.profile")
         m = n > 0.5                          # keep only bins that hold atoms
         z, vx = z[m], vx[m]
@@ -203,8 +208,12 @@ def main():
         # not a setup error; a real problem only shows if it persists in the reference.
         tol = 1.15
         flat = s < 0.25 * ns_slope
-        slope_hot = (not flat) and abs(s) > tol * ns_slope
-        face_hot = (not flat) and max(abs(v_face_bot), abs(v_face_top)) > tol * vwall
+        # a gross overshoot (slope or face speed more than ~2x expected) is not "near the
+        # wall speed" - the fit is unusable, so treat it like flat: suppress b, defer to ref.
+        severe = (not flat) and (abs(s) > 2.0 * ns_slope
+                                 or max(abs(v_face_bot), abs(v_face_top)) > 2.0 * vwall)
+        slope_hot = (not flat) and (not severe) and abs(s) > tol * ns_slope
+        face_hot = (not flat) and (not severe) and max(abs(v_face_bot), abs(v_face_top)) > tol * vwall
         if flat:
             print(f"    water velocity at the wall faces = {v_face_bot:+.3f} / {v_face_top:+.3f} "
                   f"A/ps  (wall speed -/+{vwall:g} A/ps)")
@@ -212,6 +221,12 @@ def main():
             print("      a short run this is usually short-run/thermal noise, or a different")
             print("      machine's trajectory; it is a real setup problem only if it persists in")
             print("      the shipped reference overlay below. Read b as indicative only.")
+        elif severe:
+            print(f"    water velocity at the wall faces = {v_face_bot:+.3f} / {v_face_top:+.3f} "
+                  f"A/ps  (wall speed -/+{vwall:g} A/ps)")
+            print("    NOTE: the fitted slope/wall-face speed is grossly inconsistent with the")
+            print("      imposed wall speed - this short-run fit is unusable (check the run and the")
+            print("      -var vwall value). Rely on the shipped reference below.")
         elif slope_hot or face_hot:
             print(f"    water velocity at the wall faces = {v_face_bot:+.3f} / {v_face_top:+.3f} "
                   f"A/ps  (wall speed -/+{vwall:g} A/ps)")
@@ -229,9 +244,10 @@ def main():
             print("      gradient on a short run. Read b below as indicative only and rely on the")
             print("      shipped reference for the converged value.")
 
-        if flat or abs(s) < 1e-6:
-            print("    slip length          not meaningfully determined on this run (the slope is")
-            print("      flat or reversed - see the NOTE); use the shipped reference below.")
+        if flat or severe or abs(s) < 1e-6:
+            print("    slip length          not meaningfully determined on this run (the fit is")
+            print("      flat/reversed or inconsistent with the wall - see the NOTE); use the")
+            print("      shipped reference below.")
         else:
             b = vwall / abs(s) - h / 2           # symmetric slip length (walls are equivalent)
             se_b = vwall * se_s / s ** 2         # SE(b) propagated through b = vwall/|s| - h/2
@@ -253,7 +269,7 @@ def main():
             print(f"    -> eps_sl = {par['eps_sl']:g} eV, not the wetting 0.0256 eV: compare b with "
                   "your default run -")
             print("       a weaker O-Cu attraction lets the water slide further.")
-    except (SystemExit, ZeroDivisionError, FloatingPointError, ValueError) as e:
+    except (SystemExit, ZeroDivisionError, FloatingPointError, ValueError, KeyError, OSError) as e:
         print(f"    {e}")
 
     # shipped reference tier (the two-tier pattern: this short run vs the
@@ -273,14 +289,14 @@ def main():
     overlay = None
     for t in have:
         r = ref[t]
-        if (np.isclose(par["eps_sl"], r["par"]["eps_sl"]) and
-                np.isclose(par["vwall"], r["par"]["vwall"])):
+        if (vwall is not None and np.isclose(par.get("eps_sl"), r["par"]["eps_sl"]) and
+                np.isclose(vwall, r["par"]["vwall"])):
             overlay = r
             break
-    if have and overlay is None:
-        print(f"      (no shipped reference at eps_sl = {par['eps_sl']:g} eV, "
-              f"vwall = {par['vwall']:g} A/ps - the figure shows this run alone)")
-    if z is not None:
+    if have and overlay is None and vwall is not None:
+        print(f"      (no shipped reference at eps_sl = {par.get('eps_sl'):g} eV, "
+              f"vwall = {vwall:g} A/ps - the figure shows this run alone)")
+    if z is not None and zfb is not None:
         plot(z, vx, s, c, zfb, zft, vwall, b, ref=overlay, this_ps=t_ps)
     else:
         print("    (no figure - this run's output was incomplete; the reference above is the value)")

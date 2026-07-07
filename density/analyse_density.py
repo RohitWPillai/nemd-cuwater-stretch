@@ -121,7 +121,7 @@ def main():
 
     try:
         tmean = read_timeseries("cuw_density_T.dat", col=1).mean()
-    except SystemExit:                        # a truncated T trace must not lose the density result
+    except (SystemExit, OSError):             # truncated OR missing T trace must not lose the density result
         tmean = float("nan")
     t_ps = par["nprod"] * par["dt"]
 
